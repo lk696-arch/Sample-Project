@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Oshi AI - VTuber Companion</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="avatar">🎭</div>
+      <div class="header-info">
+        <h1 class="title">Oshi AI</h1>
+        <p class="subtitle">Your AI VTuber Companion</p>
+      </div>
+      <span class="badge">LIVE</span>
+      <button class="clear-btn" id="clearBtn" title="Clear conversation">🗑</button>
+    </header>
+
+    <div class="chat-box" id="chatBox">
+      <div class="message assistant-msg">
+        <span class="msg-avatar">🎭</span>
+        <div class="bubble">Hi! I'm your Oshi AI VTuber. How can I help you today?</div>
+      </div>
+    </div>
+
+    <form class="input-area" id="chatForm">
+      <input
+        class="input"
+        type="text"
+        id="messageInput"
+        placeholder="Say something to your Oshi..."
+        autocomplete="off"
+      />
+      <button class="send-btn" type="submit" id="sendBtn">Send</button>
+    </form>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

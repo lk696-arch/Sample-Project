@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Anime Team Hub</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+  <!-- AUTH PAGES -->
+  <div id="authPage" class="auth-page">
+    <div class="auth-card">
+      <div class="brand">🎌 Anime Team Hub</div>
+      <p class="brand-sub">Your team's space to share & catch up</p>
+
+      <!-- Login Form -->
+      <div id="loginForm">
+        <h2 class="form-title">Sign In</h2>
+        <input class="field" type="text" id="loginUsername" placeholder="Username" />
+        <input class="field" type="password" id="loginPassword" placeholder="Password" />
+        <div id="loginError" class="error-msg hidden"></div>
+        <button class="btn btn-primary full" onclick="login()">Sign In</button>
+        <p class="switch-link">No account? <a href="#" onclick="showSignup()">Sign Up</a></p>
+      </div>
+
+      <!-- Signup Form -->
+      <div id="signupForm" class="hidden">
+        <h2 class="form-title">Create Account</h2>
+        <input class="field" type="text" id="signupNickname" placeholder="Display Name (e.g. SakuraChan)" />
+        <input class="field" type="text" id="signupUsername" placeholder="Username (login ID)" />
+        <input class="field" type="password" id="signupPassword" placeholder="Password (min 6 chars)" />
+        <div id="signupError" class="error-msg hidden"></div>
+        <button class="btn btn-primary full" onclick="signup()">Create Account</button>
+        <p class="switch-link">Have an account? <a href="#" onclick="showLogin()">Sign In</a></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN APP -->
+  <div id="appPage" class="hidden">
+    <nav class="navbar">
+      <div class="nav-brand">🎌 Anime Team Hub</div>
+      <div class="nav-tabs">
+        <button class="nav-tab active" onclick="showTab('feed')">📝 Feed</button>
+        <button class="nav-tab" onclick="showTab('watchlist')">📺 Watchlist</button>
+      </div>
+      <div class="nav-user">
+        <span id="navNickname"></span>
+        <button class="btn btn-outline sm" onclick="logout()">Logout</button>
+      </div>
+    </nav>
+
+    <!-- FEED TAB -->
+    <div id="feedTab" class="tab-content">
+      <div class="container">
+        <!-- New Post -->
+        <div class="card new-post-card">
+          <h3 class="card-title">Share a Thought</h3>
+          <input class="field" type="text" id="postTitle" placeholder="Title (e.g. My thoughts on Jujutsu Kaisen S3)" />
+          <input class="field" type="text" id="postAnime" placeholder="Anime name (optional)" />
+          <textarea class="field textarea" id="postContent" placeholder="Write your thoughts..."></textarea>
+          <button class="btn btn-primary" onclick="createPost()">Post</button>
+          <div id="postError" class="error-msg hidden"></div>
+        </div>
+
+        <!-- Posts List -->
+        <div id="postsList"></div>
+      </div>
+    </div>
+
+    <!-- WATCHLIST TAB -->
+    <div id="watchlistTab" class="tab-content hidden">
+      <div class="container">
+        <!-- Add Anime -->
+        <div class="card new-post-card">
+          <h3 class="card-title">Add to Watchlist</h3>
+          <input class="field" type="text" id="watchTitle" placeholder="Anime title" />
+          <input class="field" type="text" id="watchGenre" placeholder="Genre (optional)" />
+          <select class="field" id="watchStatus">
+            <option value="Watching">Watching</option>
+            <option value="Completed">Completed</option>
+            <option value="Plan to Watch">Plan to Watch</option>
+          </select>
+          <input class="field" type="text" id="watchNotes" placeholder="Notes (optional)" />
+          <button class="btn btn-primary" onclick="addToWatchlist()">Add Anime</button>
+          <div id="watchError" class="error-msg hidden"></div>
+        </div>
+
+        <!-- Watchlist Items -->
+        <div id="watchlistItems"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

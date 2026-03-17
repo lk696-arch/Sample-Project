@@ -1,20 +1,29 @@
 /**
- * server.js — AI VTuber POC Entry Point
+ * server.js — AI VTuber Backend Entry Point
  *
  * Architecture:
- *   HTTP (Express) ─── serves health check + REST endpoints
- *   WebSocket (ws)  ─── real-time bidirectional audio/event bus
+ *   HTTP (Express) ─── health check + REST endpoints
+ *   WebSocket (ws)  ─── full-duplex audio/event bus per fan session
  *
- * WebSocket message protocol (all JSON):
+ * Per-session data flow:
+ *   1. Client sends audio_chunk (base64 WebM/Opus) continuously while speaking
+ *   2. Server forwards chunks to Deepgram Nova-3 streaming WebSocket in real time
+ *   3. Deepgram emits interim transcripts (shown in UI) and speech_final (triggers LLM)
+ *   4. LLM streams tokens → sentence-chunking → ElevenLabs TTS per sentence
+ *   5. TTS audio chunks stream back to client as they arrive
+ *
+ * WebSocket message protocol (all JSON unless noted):
  *   Client → Server:
- *     { type: "audio_chunk",   data: "<base64 PCM>" }
- *     { type: "audio_end" }                             ← signals end of utterance
- *     { type: "text_input",    text: "..." }            ← text-mode fallback
+ *     { type: "audio_chunk",   data: "<base64 WebM/Opus>" }  ← mic audio, sent continuously
+ *     { type: "audio_end" }                                   ← manual end-of-utterance signal
+ *     { type: "text_input",    text: "..." }                  ← text-mode fallback
  *     { type: "ping" }
  *
  *   Server → Client:
- *     { type: "transcript",    text: "...", final: true }
- *     { type: "llm_response",  text: "...", emotion: "happy", intensity: 0.8 }
+ *     { type: "transcript",    text: "...", final: false }    ← Deepgram interim (live display)
+ *     { type: "transcript",    text: "...", final: true }     ← Deepgram speech_final
+ *     { type: "llm_token",     text: "..." }                  ← first sentence from LLM (early display)
+ *     { type: "llm_response",  text: "...", emotion: "happy", intensity: 0.8 }  ← full response
  *     { type: "expression",    params: { ParamEyeSmile: 1.0, ... } }
  *     { type: "audio_chunk",   data: "<base64 MP3>" }
  *     { type: "audio_end" }
@@ -29,6 +38,7 @@ import { createServer } from 'http';
 import cors from 'cors';
 import { v4 as uuidv4 } from 'uuid';
 import { VTuberAgent } from './agents/vtuberAgent.js';
+import { DeepgramSTT } from './voice/deepgram.js';
 
 // ─── Express setup ─────────────────────────────────────────────────────────────
 const app = express();
@@ -38,7 +48,6 @@ app.use(cors({
   methods: ['GET', 'POST'],
 }));
 
-// Health check — used by Vercel / Railway uptime monitors
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
@@ -49,26 +58,82 @@ const server = createServer(app);
 // ─── WebSocket server ──────────────────────────────────────────────────────────
 const wss = new WebSocketServer({ server, path: '/ws' });
 
-// Active sessions: Map<sessionId, { ws, agent, audioBuffer }>
-const sessions = new Map();
-
-wss.on('connection', (ws, req) => {
+wss.on('connection', (ws) => {
   const sessionId = uuidv4();
   const agent = new VTuberAgent(sessionId);
-  const audioBuffer = [];  // accumulates raw base64 chunks until audio_end
 
-  sessions.set(sessionId, { ws, agent, audioBuffer });
+  // Pipeline mutex — prevents concurrent pipeline runs per session
+  let pipelineRunning = false;
 
-  console.log(`[WS] Session connected: ${sessionId}  (${sessions.size} active)`);
+  // KeepAlive interval — prevents Deepgram from closing idle connections
+  // while the avatar is speaking (no mic audio flowing)
+  let keepAliveInterval = null;
 
-  // Helper: send a typed message safely
+  console.log(`[WS] Session connected: ${sessionId}  (${wss.clients.size} active)`);
+
+  // ── Deepgram STT setup ────────────────────────────────────────────────────────
+  const stt = new DeepgramSTT({
+    onInterim: (text) => {
+      send({ type: 'transcript', text, final: false });
+    },
+    onFinal: (transcript) => {
+      send({ type: 'transcript', text: transcript, final: true });
+      // speech_final fires when Deepgram detects 600ms silence — trigger pipeline
+      triggerPipeline(transcript);
+    },
+    onError: (err) => {
+      console.error(`[Session ${sessionId}] Deepgram error:`, err.message);
+      // Non-fatal: fall back gracefully (text_input still works)
+    },
+  });
+
+  // Connect Deepgram immediately so it's ready when the user speaks
+  stt.connect().catch((err) => {
+    console.warn(`[Session ${sessionId}] Deepgram connect failed (STT disabled):`, err.message);
+  });
+
+  // ── Helpers ───────────────────────────────────────────────────────────────────
+
   function send(payload) {
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(payload));
     }
   }
 
-  ws.on('message', async (raw) => {
+  function startKeepAlive() {
+    stopKeepAlive();
+    keepAliveInterval = setInterval(() => stt.keepAlive(), 5000);
+  }
+
+  function stopKeepAlive() {
+    if (keepAliveInterval) {
+      clearInterval(keepAliveInterval);
+      keepAliveInterval = null;
+    }
+  }
+
+  function triggerPipeline(transcript) {
+    if (pipelineRunning) {
+      console.log(`[Session ${sessionId}] Pipeline busy, dropping: "${transcript.slice(0, 40)}"`);
+      return;
+    }
+    pipelineRunning = true;
+    startKeepAlive(); // keep Deepgram alive while avatar speaks
+
+    runPipeline(agent, transcript, send)
+      .catch((err) => {
+        console.error(`[Session ${sessionId}] Pipeline error:`, err.message);
+        send({ type: 'error', message: err.message, code: err.code || 'PIPELINE_ERROR' });
+      })
+      .finally(() => {
+        pipelineRunning = false;
+        stopKeepAlive();
+      });
+  }
+
+  // ── Message handler ───────────────────────────────────────────────────────────
+
+  ws.on('message', (raw) => {
     let msg;
     try {
       msg = JSON.parse(raw);
@@ -78,41 +143,22 @@ wss.on('connection', (ws, req) => {
 
     switch (msg.type) {
 
-      // ── Audio chunk accumulation ──────────────────────────────────────────────
+      // ── Mic audio — forward to Deepgram in real time ──────────────────────────
       case 'audio_chunk':
-        if (msg.data) audioBuffer.push(msg.data);
+        if (msg.data) stt.sendAudio(msg.data);
         break;
 
-      // ── End of user utterance — run full pipeline ─────────────────────────────
-      case 'audio_end': {
-        const combinedBase64 = audioBuffer.splice(0).join('');
-        if (!combinedBase64) break;
-
-        try {
-          // Transcribe via ElevenLabs STT
-          const transcript = await agent.transcribe(combinedBase64);
-          send({ type: 'transcript', text: transcript, final: true });
-
-          // Run LLM + TTS pipeline
-          await runPipeline(agent, transcript, send);
-        } catch (err) {
-          console.error(`[Session ${sessionId}] Pipeline error:`, err.message);
-          send({ type: 'error', message: err.message, code: err.code || 'PIPELINE_ERROR' });
-        }
+      // ── Manual end-of-utterance — flush Deepgram + trigger pipeline ───────────
+      case 'audio_end':
+        stt.flush(); // fires onFinal if there's a buffered transcript
         break;
-      }
 
       // ── Text input mode (no mic / testing) ───────────────────────────────────
       case 'text_input': {
-        if (!msg.text?.trim()) break;
-        send({ type: 'transcript', text: msg.text, final: true });
-
-        try {
-          await runPipeline(agent, msg.text.trim(), send);
-        } catch (err) {
-          console.error(`[Session ${sessionId}] Pipeline error:`, err.message);
-          send({ type: 'error', message: err.message, code: err.code || 'PIPELINE_ERROR' });
-        }
+        const text = msg.text?.trim();
+        if (!text) break;
+        send({ type: 'transcript', text, final: true });
+        triggerPipeline(text);
         break;
       }
 
@@ -126,23 +172,27 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
+    stopKeepAlive();
+    stt.close();
     agent.cleanup();
-    sessions.delete(sessionId);
-    console.log(`[WS] Session closed: ${sessionId}  (${sessions.size} active)`);
+    console.log(`[WS] Session closed: ${sessionId}  (${wss.clients.size} active)`);
   });
 
   ws.on('error', (err) => {
     console.error(`[WS] Session ${sessionId} error:`, err.message);
   });
 
-  // Send session ID to client so it can display/debug it
   send({ type: 'connected', sessionId });
 });
 
 /**
- * runPipeline — the core per-turn flow:
- *   text → safety check → LLM (with memory + RAG + persona) →
- *   emotion → avatar params → TTS streaming → memory save
+ * runPipeline — streaming per-turn flow:
+ *   text → safety → LLM streaming + sentence-chunked TTS → emotion → memory
+ *
+ * The key difference from v1:
+ *   - thinkAndSpeak() overlaps LLM generation and TTS synthesis
+ *   - Audio starts playing after the FIRST sentence (~700ms), not the full response (~1.2s)
+ *   - Expression update is sent once after the full LLM response completes
  */
 async function runPipeline(agent, userText, send) {
   // 1. Safety filter on input
@@ -153,10 +203,18 @@ async function runPipeline(agent, userText, send) {
     throw err;
   }
 
-  // 2. LLM call — returns { response, emotion, intensity }
-  const llmResult = await agent.think(userText);
+  // 2. Stream LLM + TTS in pipeline (sentence-chunked)
+  //    Audio chunks are sent to client as they arrive from ElevenLabs
+  const llmResult = await agent.thinkAndSpeak(
+    userText,
+    (audioChunk) => send({ type: 'audio_chunk', data: audioChunk }),
+    (firstSentence) => send({ type: 'llm_token', text: firstSentence }),
+  );
 
-  // 3. Safety filter on output
+  // Signal end of audio stream
+  send({ type: 'audio_end' });
+
+  // 3. Safety filter on completed LLM output
   const outputCheck = await agent.checkOutput(llmResult.response);
   if (!outputCheck.safe) {
     const err = new Error('Response blocked by safety filter');
@@ -164,25 +222,19 @@ async function runPipeline(agent, userText, send) {
     throw err;
   }
 
-  // 4. Parse emotion → Live2D expression parameters
-  const expressionParams = agent.emotionToParams(llmResult.emotion, llmResult.intensity);
-
-  // 5. Send LLM response + expression update to client
+  // 4. Send full LLM response text + emotion expression update
   send({
     type: 'llm_response',
     text: llmResult.response,
     emotion: llmResult.emotion,
     intensity: llmResult.intensity,
   });
-  send({ type: 'expression', params: expressionParams });
-
-  // 6. TTS streaming — audio chunks sent as they arrive
-  await agent.speak(llmResult.response, (audioChunk) => {
-    send({ type: 'audio_chunk', data: audioChunk });
+  send({
+    type: 'expression',
+    params: agent.emotionToParams(llmResult.emotion, llmResult.intensity),
   });
-  send({ type: 'audio_end' });
 
-  // 7. Persist this turn to memory
+  // 5. Persist turn to session memory
   agent.saveMemory(userText, llmResult.response);
 }
 

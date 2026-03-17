@@ -30,7 +30,7 @@ export class MemoryEngine {
     // Tier 1: full turn objects { role, content }
     this.turns = [];
     // Tier 2: summary of turns that have scrolled out of the active window
-    this.rollingsummary = '';
+    this.rollingsum = '';
   }
 
   /**

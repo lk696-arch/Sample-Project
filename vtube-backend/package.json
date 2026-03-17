@@ -1,7 +1,7 @@
 {
   "name": "ai-vtuber-backend",
   "version": "1.0.0",
-  "description": "AI VTuber POC backend — WebSocket server with ElevenLabs + Claude pipeline",
+  "description": "AI VTuber backend — Deepgram STT + Claude streaming LLM + ElevenLabs TTS pipeline",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
